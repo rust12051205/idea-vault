@@ -314,8 +314,8 @@ function tokenize(text){
 
 async function loadIdeas(){
   try{
-    const res = await window.storage.get('ideas', false);
-    ideas = res && res.value ? JSON.parse(res.value) : [];
+    const raw = localStorage.getItem('idea-vault:ideas');
+    ideas = raw ? JSON.parse(raw) : [];
   }catch(e){
     ideas = [];
   }
@@ -323,7 +323,7 @@ async function loadIdeas(){
 
 async function saveIdeas(){
   try{
-    await window.storage.set('ideas', JSON.stringify(ideas), false);
+    localStorage.setItem('idea-vault:ideas', JSON.stringify(ideas));
   }catch(e){
     console.error('Storage error', e);
   }
