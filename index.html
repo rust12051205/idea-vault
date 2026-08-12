@@ -198,6 +198,7 @@ h1{
       <h1>Идеи на столе</h1>
     </div>
     <div class="counter"><b id="ideaCount">0</b>записей</div>
+    <p id="dbError" style="display:none; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:#ff9d7a; margin-top:6px;">база недоступна — проверьте соединение</p>
   </header>
 
   <div class="controls">
@@ -268,6 +269,9 @@ let ideas = [];
 let activeTagFilter = null;
 let editingId = null;
 
+const SUPABASE_URL = 'https://vgduclmdcsmwdxfdqlpa.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZnZHVjbG1kY3Ntd2R4ZmRxbHBhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODY1MjY3MjUsImV4cCI6MjEwMjEwMjcyNX0.5POUjYD3Q_59sK6yLnjcOnGrZHiiJ4ZmD_orwc2mh1Y';
+
 const APP_PASSWORD = '12345';
 let unlocked = false;
 let pendingAction = null;
@@ -314,19 +318,57 @@ function tokenize(text){
 
 async function loadIdeas(){
   try{
-    const raw = localStorage.getItem('idea-vault:ideas');
-    ideas = raw ? JSON.parse(raw) : [];
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/ideas?select=*&order=created_at.desc`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+    });
+    if(!res.ok) throw new Error('load failed: ' + res.status);
+    const rows = await res.json();
+    ideas = rows.map(r => ({
+      id: r.id, title: r.title, description: r.description || '',
+      tags: r.tags || [], links: r.links || [], createdAt: r.created_at
+    }));
   }catch(e){
+    console.error('Supabase load error', e);
     ideas = [];
+    $('#dbError').style.display = 'block';
   }
 }
 
-async function saveIdeas(){
-  try{
-    localStorage.setItem('idea-vault:ideas', JSON.stringify(ideas));
-  }catch(e){
-    console.error('Storage error', e);
-  }
+async function insertIdea(idea){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/ideas`, {
+    method: 'POST',
+    headers: {
+      apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json', Prefer: 'return=minimal'
+    },
+    body: JSON.stringify([{
+      id: idea.id, title: idea.title, description: idea.description,
+      tags: idea.tags, links: idea.links, created_at: idea.createdAt
+    }])
+  });
+  if(!res.ok) throw new Error('insert failed: ' + res.status);
+}
+
+async function updateIdeaRemote(idea){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/ideas?id=eq.${encodeURIComponent(idea.id)}`, {
+    method: 'PATCH',
+    headers: {
+      apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': 'application/json', Prefer: 'return=minimal'
+    },
+    body: JSON.stringify({
+      title: idea.title, description: idea.description, tags: idea.tags, links: idea.links
+    })
+  });
+  if(!res.ok) throw new Error('update failed: ' + res.status);
+}
+
+async function deleteIdeaRemote(id){
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/ideas?id=eq.${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` }
+  });
+  if(!res.ok) throw new Error('delete failed: ' + res.status);
 }
 
 function allTags(){
@@ -486,10 +528,19 @@ function openEdit(id){
 }
 
 async function deleteIdea(id){
+  const prev = ideas;
   ideas = ideas.filter(i => i.id !== id);
-  await saveIdeas();
   renderTagbar();
   renderGrid();
+  try{
+    await deleteIdeaRemote(id);
+  }catch(e){
+    console.error(e);
+    ideas = prev;
+    renderTagbar();
+    renderGrid();
+    alert('Не удалось удалить идею — проверьте подключение к базе и попробуйте снова.');
+  }
 }
 
 $('#saveBtn').onclick = async () => {
@@ -502,20 +553,32 @@ $('#saveBtn').onclick = async () => {
     $('#fTitle').focus();
     return;
   }
-  if(editingId){
-    const idea = ideas.find(i => i.id === editingId);
-    idea.title = title; idea.description = description; idea.tags = tags; idea.links = links;
-  }else{
-    ideas.push({
-      id: 'idea_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
-      title, description, tags, links,
-      createdAt: Date.now()
-    });
+  $('#saveBtn').disabled = true;
+  $('#saveBtn').textContent = 'Сохраняю…';
+  try{
+    if(editingId){
+      const idea = ideas.find(i => i.id === editingId);
+      idea.title = title; idea.description = description; idea.tags = tags; idea.links = links;
+      await updateIdeaRemote(idea);
+    }else{
+      const idea = {
+        id: 'idea_' + Date.now() + '_' + Math.random().toString(36).slice(2,7),
+        title, description, tags, links,
+        createdAt: Date.now()
+      };
+      await insertIdea(idea);
+      ideas.push(idea);
+    }
+    renderTagbar();
+    renderGrid();
+    closeForm();
+  }catch(e){
+    console.error(e);
+    alert('Не удалось сохранить идею — проверьте подключение к базе и попробуйте снова.');
+  }finally{
+    $('#saveBtn').disabled = false;
+    $('#saveBtn').textContent = 'Сохранить';
   }
-  await saveIdeas();
-  renderTagbar();
-  renderGrid();
-  closeForm();
 };
 
 searchInput.addEventListener('input', renderGrid);
